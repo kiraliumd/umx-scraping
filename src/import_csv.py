@@ -52,6 +52,11 @@ async def import_accounts(csv_path: str):
                 continue
 
             username = row[0].strip()
+            
+            # CPF Sanitization (Zero Padding)
+            if username.isdigit() and len(username) < 11:
+                username = username.zfill(11)
+            
             password = row[1].strip()
             adspower_id = None
             if len(row) > 2:

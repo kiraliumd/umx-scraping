@@ -158,6 +158,11 @@ async def perform_login(page, username, password):
 
         # 2. Preenchimento (Mantendo o método FILL que funcionou para você)
         logger.info("Filling credentials...")
+        
+        # CPF Sanitization Double-Check (Zero Padding)
+        if username.isdigit() and len(username) < 11:
+            username = username.zfill(11)
+            
         await page.fill("#username", username)
         await asyncio.sleep(0.5)
         await page.fill("#password", password)

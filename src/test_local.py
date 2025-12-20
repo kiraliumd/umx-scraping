@@ -28,20 +28,27 @@ async def main():
     # Fetch one account
     print("Fetching one account from Supabase...")
     try:
-        response = supabase.table("accounts").select("*").limit(1).execute()
+        # Busca especificamente contas que começam com 0 para teste de validação
+        response = supabase.table("accounts")\
+            .select("*")\
+            .like("username", "0%")\
+            .limit(1)\
+            .execute()
+        
         accounts = response.data
         
         if not accounts:
-            print("Error: No accounts found in database. Run 'import_csv.py' first.")
+            print("Error: No accounts found in database starting with '0'.")
             return
             
-        acc = response.data[0]
+        acc = accounts[0]
         username = acc['username']
         password = acc['password']
         cookies = acc.get('session_cookies')
         adspower_id = acc.get('adspower_user_id')
         
-        print(f"\nTestando com a conta: {username}")
+        print(f"\nConta Recuperada do Banco: {username}")
+        print(f"Testando com a conta: {username}")
         # Mask password
         masked_pass = "*" * len(password) if password else "EMPTY"
         print(f"Password: {masked_pass}")
