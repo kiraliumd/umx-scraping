@@ -25,20 +25,20 @@ async def main():
 
     supabase: Client = create_client(url, key)
 
-    # Fetch one account
-    print("Fetching one account from Supabase...")
+    # Defina aqui o ID que você quer testar
+    TARGET_ADSPOWER_ID = "k17ttb2x"  # Substitua pelo ID desejado
+
+    print(f"Buscando conta específica: {TARGET_ADSPOWER_ID}...")
     try:
-        # Busca especificamente contas que começam com 0 para teste de validação
         response = supabase.table("accounts")\
             .select("*")\
-            .like("username", "0%")\
-            .limit(1)\
+            .eq("adspower_user_id", TARGET_ADSPOWER_ID)\
             .execute()
         
         accounts = response.data
         
         if not accounts:
-            print("Error: No accounts found in database starting with '0'.")
+            print(f"Error: No accounts found in database with adspower_user_id='{TARGET_ADSPOWER_ID}'.")
             return
             
         acc = accounts[0]
@@ -72,8 +72,14 @@ async def main():
     
     try:
         # Pass account_id if available to update specific record?
-        # get_balance updates by username, so it's fine.
-        result = await get_balance(username, password, adspower_user_id=adspower_id)
+        # Call the scraper's get_balance function
+        # This will use AdsPower and Playwright
+        result = await get_balance(
+            username, 
+            acc['password'], 
+            adspower_user_id=TARGET_ADSPOWER_ID,
+            latam_password=acc.get('latam_password')
+        )
         
         print("\n=== Result ===")
         print(result)

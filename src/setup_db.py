@@ -45,6 +45,11 @@ def setup_db():
                 ALTER TABLE accounts 
                 ADD COLUMN IF NOT EXISTS adspower_user_id TEXT UNIQUE DEFAULT NULL;
                 """,
+                # Add latam_password column
+                """
+                ALTER TABLE accounts 
+                ADD COLUMN IF NOT EXISTS latam_password TEXT DEFAULT NULL;
+                """,
                 """
                 CREATE TABLE IF NOT EXISTS balance_logs (
                     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,

@@ -45,7 +45,7 @@ async def import_accounts(csv_path: str):
             if not row: # Skip empty rows
                 continue
 
-            # Format: username,password,adspower_id
+            # Format: username,password,adspower_id,latam_password
             if len(row) < 2:
                 print(f"Warning: Row {row_num + 1} has less than 2 columns, skipping.")
                 errors += 1
@@ -59,8 +59,12 @@ async def import_accounts(csv_path: str):
             
             password = row[1].strip()
             adspower_id = None
+            latam_password = None
+            
             if len(row) > 2:
                 adspower_id = row[2].strip()
+            if len(row) > 3:
+                latam_password = row[3].strip()
             
             if not username or not password:
                 print(f"Warning: Row {row_num + 1} has empty username or password, skipping.")
@@ -76,6 +80,8 @@ async def import_accounts(csv_path: str):
                 }
                 if adspower_id:
                     data["adspower_user_id"] = adspower_id
+                if latam_password:
+                    data["latam_password"] = latam_password
                 
                 # Supabase upsert
                 # on_conflict="username" is default logic if PK matches, but username is unique constraint

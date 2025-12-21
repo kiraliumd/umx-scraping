@@ -54,8 +54,13 @@ async def process_account(account, stats, details_log, sheets_logger=None):
     except: pass
     
     try:
-        # Pass adspower_id to get_balance logic
-        result = await get_balance(username, account['password'], adspower_user_id=adspower_id)
+        # Pass adspower_id and latam_password to get_balance logic
+        result = await get_balance(
+            username, 
+            account['password'], 
+            adspower_user_id=adspower_id,
+            latam_password=account.get('latam_password')
+        )
         
         if result['status'] == 'success':
             new_livelo = result.get('livelo')
