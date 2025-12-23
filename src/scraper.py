@@ -359,8 +359,34 @@ async def get_balance(username, password, adspower_user_id=None, latam_password=
     playwright = await async_playwright().start()
     try:
         browser = await playwright.chromium.connect_over_cdp(ws_endpoint)
-        # Use no_viewport=True to respect the browser's window size (maximized)
-        context = browser.contexts[0] if browser.contexts else await browser.new_context(no_viewport=True)
+        
+        # 1. Force Viewport and Window Optimization
+        # Use an explicit 1080p viewport to ensure rendering matches targets
+        context = browser.contexts[0] if browser.contexts else await browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            device_scale_factor=1
+        )
+
+        # 2. Deep Maximization via CDP
+        try:
+            # We open a temp page just to ensure we have a "web content" target for the CDP commands
+            # This helps avoid "No web contents in the target" errors
+            temp_page = await context.new_page()
+            session = await temp_page.context.new_cdp_session(temp_page)
+            
+            # Get the window ID for the current target
+            window_info = await session.send("Browser.getWindowForTarget")
+            window_id = window_info.get("windowId")
+            
+            if window_id:
+                logger.info(f"Forcing window {window_id} to maximized state via CDP...")
+                await session.send("Browser.setWindowBounds", {
+                    "windowId": window_id,
+                    "bounds": {"windowState": "maximized"}
+                })
+            await temp_page.close()
+        except Exception as cdp_err:
+            logger.warning(f"CDP Maximization failed (non-critical): {cdp_err}")
         
         # Decrypt passwords before using them
         decrypted_pass = decrypt_password(password)

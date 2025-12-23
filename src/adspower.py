@@ -22,7 +22,10 @@ class AdsPowerController:
         params = {
             "user_id": user_id,
             "open_tabs": "1",
-            "launch_args": '["--start-maximized"]'
+            "window_size": "1920,1080",
+            "window_pos": "0,0",
+            "resolution": "1920x1080",
+            "launch_args": '["--start-maximized", "--window-size=1920,1080", "--force-device-scale-factor=1"]'
         }
         headers = {
             "Authorization": f"Bearer {ADSPOWER_API_KEY}"
