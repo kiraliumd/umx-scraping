@@ -7,6 +7,7 @@ from playwright.async_api import async_playwright
 from src.adspower import AdsPowerController
 from supabase import create_client, Client
 from dotenv import load_dotenv
+from src.crypto_utils import decrypt_password
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -267,74 +268,45 @@ async def extract_latam(context, username, password):
     logger.info(">>> Starting LATAM Extraction...")
     page = await context.new_page()
     try:
-        # --- Step 1: Fast Track (Check Session) ---
-        logger.info("Checking LATAM session (Fast Track)...")
-        # Wait for the page to at least start loading and potentially redirect
-        await page.goto("https://www.latamairlines.com/br/pt/sua-conta/miles/", timeout=60000)
-        
-        # Give it a moment to stabilize/redirect if it's an SPA or slow redirect
-        await asyncio.sleep(5) 
-        
-        # If redirected to accounts.latamairlines.com or /login, session is definitely inactive
-        current_url = page.url.lower()
-        if "accounts.latam" in current_url or "login" in current_url:
-            logger.info("Fast Track: Redirected to login. Session not active.")
-        else:
-            try:
-                # Target the bold number (e.g., 1.267)
-                # We wait up to 15s here because SPAs can be slow to render the actual data
-                miles_element = page.locator("#lbl-miles-amount strong").first
-                if await miles_element.is_visible(timeout=15000):
-                    text = await miles_element.text_content()
-                    clean = re.sub(r'\D', '', text)
-                    if clean:
-                        balance = int(clean)
-                        logger.info(f"LATAM SUCCESS (Fast Track): {balance}")
-                        return balance, None
-                
-                # Check parent as fallback
-                fallback_element = page.locator("#lbl-miles-amount").first
-                if await fallback_element.is_visible(timeout=2000):
-                    text = await fallback_element.text_content()
-                    clean = re.sub(r'\D', '', text)
-                    if clean:
-                        balance = int(clean)
-                        logger.info(f"LATAM SUCCESS (Fast Track - Fallback): {balance}")
-                        return balance, None
-            except Exception as e:
-                logger.debug(f"Fast Track internal check failed: {e}")
-
-        # --- Step 2: Login Flow ---
-        logger.info("Session not found. Starting Login flow...")
+        # --- Step 1: Navigate to Home and Check Login ---
+        logger.info("Navigating to LATAM Home to check session...")
         await page.goto("https://www.latamairlines.com/br/pt", timeout=60000)
+        await asyncio.sleep(5) # Give it a moment to load profile/login button
         
         login_btn = page.locator("#header__profile__lnk-sign-in")
-        if await login_btn.is_visible(timeout=10000):
-            await login_btn.click()
+        fazer_login_text = page.get_by_text("Fazer login").first
+        
+        is_logged_in = False
+        if not await login_btn.is_visible(timeout=10000) and not await fazer_login_text.is_visible(timeout=2000):
+            logger.info("Login button not found. Assuming already logged in.")
+            is_logged_in = True
         else:
-            await page.get_by_text("Fazer login").first.click()
+            logger.info("Login button found. Starting Login flow...")
+            if await login_btn.is_visible(timeout=1000):
+                await login_btn.click()
+            else:
+                await fazer_login_text.click()
 
-        # Step 2.1: Username
-        logger.info("Step 1: Filling Username...")
-        await page.wait_for_selector("#form-input--alias", state="visible", timeout=20000)
-        await page.fill("#form-input--alias", username)
-        await page.click("#primary-button")
-        
-        # Step 2.2: Password
-        logger.info("Step 2: Filling Password...")
-        await page.wait_for_selector("#form-input--password", state="visible", timeout=20000)
-        await page.fill("#form-input--password", password)
-        await page.click("#primary-button")
-        
-        logger.info("Login submitted. Waiting for redirect...")
-        await asyncio.sleep(10)
-        
-        # --- Step 3: Extraction ---
-        # Navigate back to miles page if not automatically redirected
-        if "sua-conta/miles" not in page.url:
-            logger.info("Navigating to miles page...")
-            await page.goto("https://www.latamairlines.com/br/pt/sua-conta/miles/", timeout=60000)
+            # Step 2.1: Username
+            logger.info("Step 1: Filling Username...")
+            await page.wait_for_selector("#form-input--alias", state="visible", timeout=20000)
+            await page.fill("#form-input--alias", username)
+            await page.click("#primary-button")
             
+            # Step 2.2: Password
+            logger.info("Step 2: Filling Password...")
+            await page.wait_for_selector("#form-input--password", state="visible", timeout=20000)
+            await page.fill("#form-input--password", password)
+            await page.click("#primary-button")
+            
+            logger.info("Login submitted. Waiting for redirect...")
+            await asyncio.sleep(10)
+            is_logged_in = True # Assuming success for now, will verify on miles page
+
+        # --- Step 2: Extraction ---
+        logger.info("Navigating directly to miles page for extraction...")
+        await page.goto("https://www.latamairlines.com/br/pt/sua-conta/miles/", timeout=60000)
+        
         # Robust wait to ensure the SPA has finished loading data
         logger.info("Waiting for miles page to stabilize...")
         try:
@@ -353,7 +325,7 @@ async def extract_latam(context, username, password):
             clean = re.sub(r'\D', '', text)
             if clean:
                 balance = int(clean)
-                logger.info(f"LATAM SUCCESS (After Login): {balance}")
+                logger.info(f"LATAM SUCCESS: {balance}")
                 return balance, None
         
         text_content = await page.content()
@@ -387,19 +359,27 @@ async def get_balance(username, password, adspower_user_id=None, latam_password=
     playwright = await async_playwright().start()
     try:
         browser = await playwright.chromium.connect_over_cdp(ws_endpoint)
-        context = browser.contexts[0] if browser.contexts else await browser.new_context()
+        # Use no_viewport=True to respect the browser's window size (maximized)
+        context = browser.contexts[0] if browser.contexts else await browser.new_context(no_viewport=True)
         
+        # Decrypt passwords before using them
+        decrypted_pass = decrypt_password(password)
+        decrypted_latam_pass = decrypt_password(latam_password) if latam_password else decrypted_pass
+
         # 1. LIVELO
-        result = await extract_livelo(context, username, password)
+        result = await extract_livelo(context, username, decrypted_pass)
         livelo_balance = result[0] if isinstance(result, tuple) else result.get("livelo") if isinstance(result, dict) else result
         error_screenshot = result[1] if isinstance(result, tuple) else result.get("screenshot") if isinstance(result, dict) else None
 
-        # 2. LATAM
+        # 2. LATAM (TEMPORARILY DEACTIVATED)
         # Use specific latam_password if provided, else fallback to the shared password
-        target_latam_pass = latam_password if latam_password else password
-        latam_result = await extract_latam(context, username, target_latam_pass)
-        latam_balance = latam_result[0] if isinstance(latam_result, tuple) else latam_result
-        latam_error_screenshot = latam_result[1] if isinstance(latam_result, tuple) else None
+        # latam_result = await extract_latam(context, username, decrypted_latam_pass)
+        # latam_balance = latam_result[0] if isinstance(latam_result, tuple) else latam_result
+        # latam_error_screenshot = latam_result[1] if isinstance(latam_result, tuple) else None
+        
+        logger.info("LATAM Extraction is currently deactivated. Skipping...")
+        latam_balance = None
+        latam_error_screenshot = None
 
         if livelo_balance is not None or latam_balance is not None: 
              await update_account_db_multi(username, "active", livelo_val=livelo_balance, latam_val=latam_balance)

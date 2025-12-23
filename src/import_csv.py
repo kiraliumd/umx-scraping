@@ -1,8 +1,14 @@
 import csv
 import os
+import sys
 import asyncio
 from dotenv import load_dotenv
+
+# Add project root to path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from supabase import create_client, Client
+from src.crypto_utils import encrypt_password
 
 # Load environment variables
 load_dotenv()
@@ -74,14 +80,14 @@ async def import_accounts(csv_path: str):
             try:
                 data = {
                     "username": username,
-                    "password": password,
+                    "password": encrypt_password(password),
                     "status": "active", # Changed from 'pending' to 'active' because of CHECK constraint
                     "updated_at": "now()"
                 }
                 if adspower_id:
                     data["adspower_user_id"] = adspower_id
                 if latam_password:
-                    data["latam_password"] = latam_password
+                    data["latam_password"] = encrypt_password(latam_password)
                 
                 # Supabase upsert
                 # on_conflict="username" is default logic if PK matches, but username is unique constraint

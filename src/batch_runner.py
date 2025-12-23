@@ -62,6 +62,12 @@ async def process_account(account, stats, details_log, sheets_logger=None):
             latam_password=account.get('latam_password')
         )
         
+        # Log results
+        status_str = "SUCCESS" if result['status'] == 'success' else "FAILED"
+        livelo_val = result.get('livelo') if result.get('livelo') is not None else "N/A"
+        # LATAM is deactivated, so we just show N/A or skip
+        logger.info(f"RESULT {username}: Livelo={livelo_val} (LATAM Deactivated) - Status: {status_str}")
+
         if result['status'] == 'success':
             new_livelo = result.get('livelo')
             # latam ignored

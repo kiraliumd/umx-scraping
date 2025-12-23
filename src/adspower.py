@@ -18,14 +18,19 @@ class AdsPowerController:
         """
 
         # Endpoint Updated: /api/v1/browser/start
-        url = f"{ADSPOWER_API_URL}/api/v1/browser/start?user_id={user_id}"
+        url = f"{ADSPOWER_API_URL}/api/v1/browser/start"
+        params = {
+            "user_id": user_id,
+            "open_tabs": "1",
+            "launch_args": '["--start-maximized"]'
+        }
         headers = {
             "Authorization": f"Bearer {ADSPOWER_API_KEY}"
         }
         try:
-            logger.info(f"Starting AdsPower profile: {user_id}...")
+            logger.info(f"Starting AdsPower profile: {user_id} with maximized window...")
             async with httpx.AsyncClient() as client:
-                resp = await client.get(url, headers=headers, timeout=30)
+                resp = await client.get(url, params=params, headers=headers, timeout=30)
                 
                 try:
                     data = resp.json()

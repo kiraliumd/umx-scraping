@@ -64,10 +64,19 @@ def setup_db():
                 """
                 DO $$ 
                 BEGIN
+                    -- Accounts Policy
                     IF NOT EXISTS (
-                        SELECT 1 FROM pg_policies WHERE policyname = 'Service Role Full Access' AND tablename = 'accounts'
+                        SELECT 1 FROM pg_policies WHERE policyname = 'service_role_access' AND tablename = 'accounts'
                     ) THEN
-                        CREATE POLICY "Service Role Full Access" ON accounts
+                        CREATE POLICY "service_role_access" ON accounts
+                        FOR ALL USING (auth.role() = 'service_role');
+                    END IF;
+
+                    -- Balance Logs Policy
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_policies WHERE policyname = 'service_role_access' AND tablename = 'balance_logs'
+                    ) THEN
+                        CREATE POLICY "service_role_access" ON balance_logs
                         FOR ALL USING (auth.role() = 'service_role');
                     END IF;
                 END $$;
