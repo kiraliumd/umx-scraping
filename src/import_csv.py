@@ -59,18 +59,13 @@ async def import_accounts(csv_path: str):
 
             username = row[0].strip()
             
-            # CPF Sanitization (Zero Padding)
+            # 1. Sanitization (Zero Pad)
             if username.isdigit() and len(username) < 11:
                 username = username.zfill(11)
             
             password = row[1].strip()
-            adspower_id = None
-            latam_password = None
-            
-            if len(row) > 2:
-                adspower_id = row[2].strip()
-            if len(row) > 3:
-                latam_password = row[3].strip()
+            adspower_id = row[2].strip() if len(row) > 2 else None
+            latam_password = row[3].strip() if len(row) > 3 else None
             
             if not username or not password:
                 print(f"Warning: Row {row_num + 1} has empty username or password, skipping.")
@@ -78,10 +73,32 @@ async def import_accounts(csv_path: str):
                 continue
                 
             try:
+                # 2. AdsPower ID Conflict Resolution (Smart Fix)
+                if adspower_id:
+                    # Check who currently owns this ID
+                    owner_check = supabase.table("accounts").select("username").eq("adspower_user_id", adspower_id).execute()
+                    if owner_check.data:
+                        owner_username = owner_check.data[0]['username']
+                        
+                        if owner_username != username:
+                            # Conflict detected!
+                            # Check if the CSV username already exists in DB
+                            target_check = supabase.table("accounts").select("username").eq("username", username).execute()
+                            
+                            if not target_check.data:
+                                # Scenario A: Same person, CPF corrected/changed. Rename old record.
+                                print(f"♻️ Renaming account {owner_username} to {username} based on AdsPower ID...")
+                                supabase.table("accounts").update({"username": username}).eq("username", owner_username).execute()
+                            else:
+                                # Scenario B: ID Transfer/Conflict. Free the ID from the old owner.
+                                print(f"⚠️ Unlinking AdsPower ID {adspower_id} from obsolete account {owner_username}...")
+                                supabase.table("accounts").update({"adspower_user_id": None}).eq("username", owner_username).execute()
+
+                # 3. Persistence (Upsert)
                 data = {
                     "username": username,
                     "password": encrypt_password(password),
-                    "status": "active", # Changed from 'pending' to 'active' because of CHECK constraint
+                    "status": "active",
                     "updated_at": "now()"
                 }
                 if adspower_id:
@@ -89,19 +106,17 @@ async def import_accounts(csv_path: str):
                 if latam_password:
                     data["latam_password"] = encrypt_password(latam_password)
                 
-                # Supabase upsert
-                # on_conflict="username" is default logic if PK matches, but username is unique constraint
+                # Upsert ensures passwords and IDs are updated from CSV
                 response = supabase.table("accounts").upsert(data, on_conflict="username").execute()
                 
                 if response.data:
                     count += 1
-                    print(f"Imported: {username} (AdsPower: {adspower_id if adspower_id else 'N/A'})")
+                    print(f"✅ Processed: {username} (AdsPower: {adspower_id if adspower_id else 'N/A'})")
                 else:
-                    # If data is empty but no error raised, it might be an update
                     updated += 1
                     
             except Exception as e:
-                print(f"Error importing {username}: {e}")
+                print(f"❌ Error processing {username}: {e}")
                 errors += 1
                 
     print(f"Import complete.")
@@ -109,4 +124,5 @@ async def import_accounts(csv_path: str):
     print(f"Errors: {errors}")
 
 if __name__ == "__main__":
-    asyncio.run(import_accounts("contas.csv"))
+    csv_file = sys.argv[1] if len(sys.argv) > 1 else "contas.csv"
+    asyncio.run(import_accounts(csv_file))
