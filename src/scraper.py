@@ -204,6 +204,31 @@ async def extract_livelo(context, username, password):
     final_error = None
     final_screenshot = None
 
+    try:
+        access_token = None
+        refresh_token = None
+        cookies = await context.cookies()
+        for cookie in cookies:
+            if cookie['name'] == 'access_token':
+                access_token = cookie['value']
+            elif cookie['name'] == 'refresh_token':
+                refresh_token = cookie['value']
+            if access_token and refresh_token:
+                break
+        api_url_tokens_umx_receive = 'https://adm.skyvio.com.br/api/livelo/tokens/receive/'
+        headers = { 'Content-Type': 'application/json' }
+        response = await requests.post(
+            url = api_url_tokens_umx_receive,
+            headers = headers
+        )
+        if response.status_code == '200':
+            logger.info(f"Tokens Livelo obtidos com sucesso!")
+        else:
+            logger.error(f'Erro ao obter tokens Livelo: {reponse.status_code}')
+            logger.error(f'Erro tokens Livelo: {reponse.text}')
+    except Exception as e::
+        logger.error(f'Tentativa coleta tokens livelo {e}')
+         
     while attempt < max_retries:
         attempt += 1
         logger.info(f"🔄 Tentativa {attempt}/{max_retries}")
