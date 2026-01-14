@@ -3,6 +3,8 @@ import logging
 import os
 import time
 import re
+import random
+import httpx
 from playwright.async_api import async_playwright
 from src.adspower import AdsPowerController
 from supabase import create_client, Client
@@ -18,6 +20,59 @@ load_dotenv()
 url: str = os.environ.get("SUPABASE_URL", "")
 key: str = os.environ.get("SUPABASE_KEY", "")
 supabase: Client = create_client(url, key) if url and key else None
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
+
+
+async def _get_latam_code_from_supabase(start_time):
+    """
+    Polls Supabase 'sms_logs' table for the LATAM 2FA code.
+    This replaces Telegram polling for better reliability.
+    """
+    if not supabase:
+        logger.error("Supabase client not initialized. Cannot poll SMS logs.")
+        return None
+
+    timeout = 120 # 2 minutes
+    poll_start = time.time()
+    # Convert start_time (unix) to ISO for Supabase comparison
+    start_iso = time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime(start_time - 30))
+    
+    logger.info(f"Polling Supabase 'sms_logs' for 2FA code since {start_iso}...")
+
+    while time.time() - poll_start < timeout:
+        try:
+            # Query sms_logs for messages since start_time containing 'LATAM'
+            response = supabase.table("sms_logs") \
+                .select("*") \
+                .filter("created_at", "gte", start_iso) \
+                .order("created_at", desc=True) \
+                .limit(1) \
+                .execute()
+            
+            if response.data:
+                msg = response.data[0]
+                text = msg.get("text", "")
+                created_at = msg.get("created_at")
+                
+                logger.info(f"Checking Supabase SMS: {text[:50]}... (Received at: {created_at})")
+                
+                # Regex for 6 digits
+                match = re.search(r"(\d{6})", text)
+                if match:
+                    code = match.group(1)
+                    if "LATAM" in text.upper() or "CÓDIGO" in text.upper():
+                        logger.info(f"✅ SUCCESS: Code found in Supabase: {code}")
+                        return code
+            
+            await asyncio.sleep(3) # Check database every 3 seconds
+        except Exception as e:
+            logger.error(f"Error polling Supabase 'sms_logs': {e}")
+            await asyncio.sleep(5)
+    
+    logger.warning("Timeout reached without finding 2FA code in Supabase.")
+    return None
 
 
 async def save_screenshot(page, name_prefix):
@@ -258,83 +313,193 @@ async def extract_livelo(context, username, password):
                 break
     return {"livelo": None, "error": final_error, "screenshot": final_screenshot}
 
+async def perform_latam_login(page, username, password):
+    """
+    Handles LATAM Login with 2-step process and 2FA support.
+    """
+    try:
+        # Step 1: Username
+        logger.info("Step 1: Filling Username (Humanized)...")
+        await page.wait_for_selector("#form-input--alias", state="visible", timeout=20000)
+        await asyncio.sleep(random.uniform(1.2, 2.5)) # Pause before typing
+        await page.type("#form-input--alias", username, delay=random.randint(70, 160))
+        
+        await asyncio.sleep(random.uniform(0.5, 1.2)) # Pause before button
+        await page.click("#primary-button")
+        
+        # Step 2: Password
+        logger.info("Step 2: Filling Password (Humanized)...")
+        await page.wait_for_selector("#form-input--password", state="visible", timeout=20000)
+        await asyncio.sleep(random.uniform(1.0, 2.1)) # Pause before typing
+        await page.type("#form-input--password", password, delay=random.randint(60, 150))
+        
+        await asyncio.sleep(random.uniform(0.6, 1.3)) # Pause before button
+        await page.click("#primary-button")
+        
+        logger.info("Login submitted. Checking for 2FA...")
+        
+        # Step 3: Check for 2FA Selection or Code Input
+        try:
+            # Check if we are on the 2FA selection screen
+            await asyncio.sleep(random.uniform(4.0, 6.0))
+            
+            # Try to detect which 2FA screen we are on
+            logger.info("Waiting for 2FA selection or code input screen...")
+            try:
+                # Wait for either selector
+                await page.wait_for_selector("#radio-SMS, #form-input--code-0", timeout=20000)
+                
+                if await page.locator("#radio-SMS").is_visible():
+                    logger.info("2FA selection screen detected. Choosing SMS...")
+                    await asyncio.sleep(random.uniform(0.8, 1.8))
+                    await page.click("#radio-SMS")
+                    await asyncio.sleep(random.uniform(0.5, 1.1))
+                    await page.click("#form-button--primaryAction")
+                    await asyncio.sleep(3)
+                    # Now wait for the code input
+                    await page.wait_for_selector("#form-input--code-0", timeout=15000)
+
+                if await page.locator("#form-input--code-0").is_visible(timeout=5000):
+                    logger.info("2FA Code Input screen detected. Polling Supabase...")
+                    start_time = time.time()
+                    
+                    # --- WEBHOOK INTERCEPTION ---
+                    code = await _get_latam_code_from_supabase(start_time)
+                    if not code:
+                        raise Exception("Failed to retrieve 2FA code from Supabase.")
+                    
+                    logger.info(f"Filling 2FA code (Humanized)...")
+                    for i, digit in enumerate(code[:6]):
+                        await asyncio.sleep(random.uniform(0.2, 0.5))
+                        await page.fill(f"#form-input--code-{i}", digit)
+                    
+                    await asyncio.sleep(random.uniform(1.0, 2.0))
+                    await page.click("#form-button--primaryAction")
+                    await asyncio.sleep(5)
+
+            except Exception as e:
+                if "timeout" in str(e).lower():
+                    logger.info("No 2FA screens detected. Checking if login was successful...")
+                else:
+                    logger.warning(f"Error during 2FA flow: {e}")
+                    raise e
+            
+            # --- POST-LOGIN VERIFICATION ---
+            logger.info("Verifying if session is active...")
+            # Wait for profile name or logout button to indicate success
+            try:
+                # Common selectors for logged in state
+                await page.wait_for_selector("#header__profile__lnk-profile, [data-testid='header-username']", timeout=15000)
+                logger.info("Login confirmed! Session is active.")
+            except:
+                logger.warning("Could not definitively confirm login via profile selector. Will check miles page directly.")
+
+        except Exception as e:
+            if "Timeout" in str(e) or "visible" in str(e):
+                logger.info("2FA flow not triggered, checking if login succeeded.")
+            else:
+                logger.warning(f"Error during 2FA flow: {e}")
+                raise e
+
+    except Exception as e:
+        logger.error(f"LATAM Login Interaction Failed: {e}")
+        await save_screenshot(page, f"latam_login_failed_{username}")
+        raise e
+
 async def extract_latam(context, username, password):
     """
-    Scrapes LATAM Pass Miles:
-    1. Fast Track: Check if already logged in via direct URL.
-    2. Login: 2-step process (Username -> Password).
-    3. Extract: Numeric balance from account page.
+    Scrapes LATAM Pass Miles with 2FA support.
     """
     logger.info(">>> Starting LATAM Extraction...")
     page = await context.new_page()
     try:
         # --- Step 1: Navigate to Home and Check Login ---
         logger.info("Navigating to LATAM Home to check session...")
-        await page.goto("https://www.latamairlines.com/br/pt", timeout=60000)
-        await asyncio.sleep(5) # Give it a moment to load profile/login button
+        await page.goto("https://www.latamairlines.com/br/pt", timeout=90000)
+        await asyncio.sleep(5)
         
         login_btn = page.locator("#header__profile__lnk-sign-in")
         fazer_login_text = page.get_by_text("Fazer login").first
         
-        is_logged_in = False
-        if not await login_btn.is_visible(timeout=10000) and not await fazer_login_text.is_visible(timeout=2000):
-            logger.info("Login button not found. Assuming already logged in.")
-            is_logged_in = True
-        else:
-            logger.info("Login button found. Starting Login flow...")
+        if await login_btn.is_visible(timeout=5000) or await fazer_login_text.is_visible(timeout=2000):
+            logger.info("Login button found. Checking for cookie banner first...")
+            # --- COOKIE BANNER CHECK ---
+            try:
+                cookie_btn = page.locator("#cookies-politics-button")
+                if await cookie_btn.is_visible(timeout=5000):
+                    logger.info("Cookie banner detected. Accepting all cookies...")
+                    await cookie_btn.click()
+                    await asyncio.sleep(2) # Wait for banner to close
+            except:
+                pass
+
+            logger.info("Starting Login flow...")
             if await login_btn.is_visible(timeout=1000):
                 await login_btn.click()
             else:
                 await fazer_login_text.click()
 
-            # Step 2.1: Username
-            logger.info("Step 1: Filling Username...")
-            await page.wait_for_selector("#form-input--alias", state="visible", timeout=20000)
-            await page.fill("#form-input--alias", username)
-            await page.click("#primary-button")
-            
-            # Step 2.2: Password
-            logger.info("Step 2: Filling Password...")
-            await page.wait_for_selector("#form-input--password", state="visible", timeout=20000)
-            await page.fill("#form-input--password", password)
-            await page.click("#primary-button")
-            
-            logger.info("Login submitted. Waiting for redirect...")
-            await asyncio.sleep(10)
-            is_logged_in = True # Assuming success for now, will verify on miles page
+            await perform_latam_login(page, username, password)
+        else:
+            logger.info("Login button not found. Assuming already logged in.")
 
         # --- Step 2: Extraction ---
         logger.info("Navigating directly to miles page for extraction...")
-        await page.goto("https://www.latamairlines.com/br/pt/sua-conta/miles/", timeout=60000)
+        await page.goto("https://www.latamairlines.com/br/pt/sua-conta/miles/", timeout=90000)
         
-        # Robust wait to ensure the SPA has finished loading data
         logger.info("Waiting for miles page to stabilize...")
+        await asyncio.sleep(random.uniform(5.0, 8.0)) # Extra wait for dashboard
+        
         try:
-             await page.wait_for_load_state("networkidle", timeout=20000)
+             await page.wait_for_load_state("networkidle", timeout=30000)
         except:
-             logger.warning("Networkidle timeout, proceeding with extraction...")
+             logger.warning("Networkidle timeout, checking if elements are interactive...")
 
-        # Increased timeouts significantly for slow renders (as per user feedback)
-        miles_element = page.locator("#lbl-miles-amount strong").first
-        if not await miles_element.is_visible(timeout=15000):
-            logger.info("Selector #lbl-miles-amount strong not immediately visible, checking parent...")
-            miles_element = page.locator("#lbl-miles-amount").first
+        # Robust extraction - Multiple selector attempts
+        selectors = [
+            "#lbl-miles-amount strong",
+            "#lbl-miles-amount",
+            ".miles-balance__amount", # Possible new/alt selector
+            "span:has-text('pontos') + strong" # Generic fallback
+        ]
+        
+        miles_element = None
+        for sel in selectors:
+            try:
+                elem = page.locator(sel).first
+                if await elem.is_visible(timeout=5000):
+                    miles_element = elem
+                    logger.info(f"Found balance via selector: {sel}")
+                    break
+            except: continue
 
-        if await miles_element.is_visible(timeout=20000):
+        if miles_element:
             text = await miles_element.text_content()
+            logger.info(f"Raw extracted text: {text}")
             clean = re.sub(r'\D', '', text)
             if clean:
                 balance = int(clean)
                 logger.info(f"LATAM SUCCESS: {balance}")
                 return balance, None
         
+        # Final Fallback regex on whole content
+        logger.info("Attempting Final Regex Fallback...")
         text_content = await page.content()
-        match = re.search(r"Saldo de milhas.*?(\d+[\.\d]*)", text_content, re.IGNORECASE | re.DOTALL)
-        if match:
-            clean = re.sub(r'\D', '', match.group(1))
-            balance = int(clean)
-            logger.info(f"LATAM SUCCESS (Regex Match): {balance}")
-            return balance, None
+        # Look for patterns like "10.000 pontos" or "Saldo de milhas 10.000"
+        patterns = [
+            r"Saldo de milhas.*?(\d+[\.\d]*)",
+            r"(\d+[\.\d]*)\s*pontos",
+            r"(\d+[\.\d]*)\s*milhas"
+        ]
+        
+        for pat in patterns:
+            match = re.search(pat, text_content, re.IGNORECASE | re.DOTALL)
+            if match:
+                clean = re.sub(r'\D', '', match.group(1))
+                if clean:
+                    balance = int(clean)
+                    logger.info(f"LATAM SUCCESS (Pattern '{pat}'): {balance}")
+                    return balance, None
 
         logger.error("Failed to extract LATAM balance.")
         screenshot_path = await save_screenshot(page, f"error_latam_{username}")
@@ -397,15 +562,11 @@ async def get_balance(username, password, adspower_user_id=None, latam_password=
         livelo_balance = result[0] if isinstance(result, tuple) else result.get("livelo") if isinstance(result, dict) else result
         error_screenshot = result[1] if isinstance(result, tuple) else result.get("screenshot") if isinstance(result, dict) else None
 
-        # 2. LATAM (TEMPORARILY DEACTIVATED)
+        # 2. LATAM
         # Use specific latam_password if provided, else fallback to the shared password
-        # latam_result = await extract_latam(context, username, decrypted_latam_pass)
-        # latam_balance = latam_result[0] if isinstance(latam_result, tuple) else latam_result
-        # latam_error_screenshot = latam_result[1] if isinstance(latam_result, tuple) else None
-        
-        logger.info("LATAM Extraction is currently deactivated. Skipping...")
-        latam_balance = None
-        latam_error_screenshot = None
+        latam_result = await extract_latam(context, username, decrypted_latam_pass)
+        latam_balance = latam_result[0] if isinstance(latam_result, tuple) else latam_result
+        latam_error_screenshot = latam_result[1] if isinstance(latam_result, tuple) else None
 
         if livelo_balance is not None or latam_balance is not None: 
              await update_account_db_multi(username, "active", livelo_val=livelo_balance, latam_val=latam_balance)

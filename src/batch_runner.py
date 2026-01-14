@@ -41,7 +41,9 @@ async def process_account(account, stats, details_log, sheets_logger=None):
         details_log.append(f"❌ {username}: Sem AdsPower ID")
         stats['failed'] += 1
         if sheets_logger:
-            try: sheets_logger.log_execution(username, 0, "FALHA", "Sem AdsPower ID")
+            try: sheets_logger.log_execution(username, 0, "FALHA", program="Livelo", detail="Sem AdsPower ID")
+            except: pass
+            try: sheets_logger.log_execution(username, 0, "FALHA", program="LATAM", detail="Sem AdsPower ID")
             except: pass
         return False
 
@@ -65,35 +67,53 @@ async def process_account(account, stats, details_log, sheets_logger=None):
         # Log results
         status_str = "SUCCESS" if result['status'] == 'success' else "FAILED"
         livelo_val = result.get('livelo') if result.get('livelo') is not None else "N/A"
-        # LATAM is deactivated, so we just show N/A or skip
-        logger.info(f"RESULT {username}: Livelo={livelo_val} (LATAM Deactivated) - Status: {status_str}")
+        latam_val = result.get('latam') if result.get('latam') is not None else "N/A"
+        
+        logger.info(f"RESULT {username}: Livelo={livelo_val}, LATAM={latam_val} - Status: {status_str}")
 
         if result['status'] == 'success':
             new_livelo = result.get('livelo')
-            # latam ignored
+            new_latam = result.get('latam')
             
             liv_ok = (new_livelo is not None)
+            latam_ok = (new_latam is not None)
             
-            if liv_ok:
+            # Log Livelo to Sheets
+            if sheets_logger:
+                if liv_ok:
+                     try: sheets_logger.log_execution(profile_name, new_livelo, "SUCESSO", program="Livelo", detail="Extração OK")
+                     except Exception as e: logger.error(f"Sheets Log Error (Livelo): {e}")
+                else:
+                     try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="Livelo", detail="Saldo vazio")
+                     except Exception as e: logger.error(f"Sheets Log Error (Livelo): {e}")
+
+            # Log LATAM to Sheets
+            if sheets_logger:
+                if latam_ok:
+                     try: sheets_logger.log_execution(profile_name, new_latam, "SUCESSO", program="LATAM", detail="Extração OK")
+                     except Exception as e: logger.error(f"Sheets Log Error (LATAM): {e}")
+                else:
+                     try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="LATAM", detail="Saldo vazio")
+                     except Exception as e: logger.error(f"Sheets Log Error (LATAM): {e}")
+
+            # Stats update
+            if liv_ok or latam_ok:
                 stats['success'] += 1
-                if sheets_logger:
-                     try: sheets_logger.log_execution(profile_name, new_livelo, "SUCESSO", "Extração OK")
-                     except: pass
             else:
                 stats['failed'] += 1
-                details_log.append(f"❌ {username}: Falha ao extrair Livelo")
-                if sheets_logger:
-                     try: sheets_logger.log_execution(profile_name, 0, "FALHA", "Retorno ok mas saldo vazio")
-                     except: pass
+                details_log.append(f"❌ {username}: Falha na extração de ambos")
 
             # --- DB Comparison & Alerts ---
             changes = {}
             if liv_ok:
-                old_val = account.get('livelo_balance') or 0
-                if new_livelo != old_val:
-                    changes['livelo'] = {'old': old_val, 'new': new_livelo}
-
-            logger.info(f"RESULT {username}: Livelo={new_livelo}")
+                old_livelo = account.get('livelo_balance') or 0
+                if new_livelo != old_livelo:
+                    changes['livelo'] = {'old': old_livelo, 'new': new_livelo}
+            
+            if latam_ok:
+                old_latam = account.get('latam_balance') or 0
+                if new_latam != old_latam:
+                    changes['latam'] = {'old': old_latam, 'new': new_latam}
 
             if changes:
                 logger.info(f"Divergence detected: {changes}")
@@ -120,7 +140,9 @@ async def process_account(account, stats, details_log, sheets_logger=None):
             stats['failed'] += 1
             
             if sheets_logger:
-                try: sheets_logger.log_execution(profile_name, 0, "FALHA", msg)
+                try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="Livelo", detail=msg)
+                except: pass
+                try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="LATAM", detail=msg)
                 except: pass
                 
             return False
@@ -131,7 +153,9 @@ async def process_account(account, stats, details_log, sheets_logger=None):
         stats['failed'] += 1
         
         if sheets_logger:
-            try: sheets_logger.log_execution(profile_name, 0, "CRITICAL", str(e))
+            try: sheets_logger.log_execution(profile_name, 0, "CRITICAL", program="Livelo", detail=str(e))
+            except: pass
+            try: sheets_logger.log_execution(profile_name, 0, "CRITICAL", program="LATAM", detail=str(e))
             except: pass
             
         return False
