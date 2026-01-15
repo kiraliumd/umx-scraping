@@ -241,6 +241,47 @@ async def _ensure_clean_tab(context, page=None):
     await new_page.bring_to_front()
     return new_page
 
+async def _send_livelo_tokens(context, username):
+    """
+    Collects access and refresh tokens from cookies and sends them to Skyvio API.
+    """
+    try:
+        access_token = None
+        refresh_token = None
+        cookies = await context.cookies()
+        for cookie in cookies:
+            if cookie['name'] == 'access_token':
+                access_token = cookie['value']
+            elif cookie['name'] == 'refresh_token':
+                refresh_token = cookie['value']
+            if access_token and refresh_token:
+                break
+        
+        if access_token and refresh_token:
+            logger.info(f"Fresh tokens found for {username}! Sending to Skyvio...")
+            api_url_tokens_umx_receive = 'https://adm.skyvio.com.br/api/livelo/tokens/receive/'
+            async with httpx.AsyncClient() as client:
+                response = await client.post(
+                    url=api_url_tokens_umx_receive,
+                    json={
+                        "username": username,
+                        "access_token": access_token,
+                        "refresh_token": refresh_token
+                    },
+                    timeout=30.0
+                )
+                if response.status_code == 200:
+                    logger.info(f"✅ Tokens Livelo enviados com sucesso para {username}!")
+                    return True
+                else:
+                    logger.error(f'❌ Erro ao enviar tokens Livelo: {response.status_code}')
+                    logger.error(f'Resposta erro: {response.text}')
+        else:
+            logger.info(f"No access/refresh tokens found in session for {username} yet.")
+    except Exception as e:
+        logger.error(f'Erro na coleta/envio de tokens Livelo para {username}: {e}')
+    return False
+
 async def extract_livelo(context, username, password):
     logger.info(">>> Starting LIVELO Extraction (Smart Mode)...")
     page = None
@@ -259,30 +300,8 @@ async def extract_livelo(context, username, password):
     final_error = None
     final_screenshot = None
 
-    try:
-        access_token = None
-        refresh_token = None
-        cookies = await context.cookies()
-        for cookie in cookies:
-            if cookie['name'] == 'access_token':
-                access_token = cookie['value']
-            elif cookie['name'] == 'refresh_token':
-                refresh_token = cookie['value']
-            if access_token and refresh_token:
-                break
-        api_url_tokens_umx_receive = 'https://adm.skyvio.com.br/api/livelo/tokens/receive/'
-        headers = { 'Content-Type': 'application/json' }
-        response = await requests.post(
-            url = api_url_tokens_umx_receive,
-            headers = headers
-        )
-        if response.status_code == '200':
-            logger.info(f"Tokens Livelo obtidos com sucesso!")
-        else:
-            logger.error(f'Erro ao obter tokens Livelo: {reponse.status_code}')
-            logger.error(f'Erro tokens Livelo: {reponse.text}')
-    except Exception as e::
-        logger.error(f'Tentativa coleta tokens livelo {e}')
+    # Try sending tokens if they already exist (pre-existing session)
+    await _send_livelo_tokens(context, username)
          
     while attempt < max_retries:
         attempt += 1
@@ -316,6 +335,10 @@ async def extract_livelo(context, username, password):
 
             logger.info("Pontos não encontrados. Iniciando Login...")
             await perform_login(page, username, password)
+            
+            # Send tokens AGAIN after successful login to ensure they are fresh
+            await _send_livelo_tokens(context, username)
+            
             points = await _extract_points(page)
             if points is not None:
                 logger.info(f"✅ SUCESSO (Pós-Login): {points}")
@@ -587,11 +610,14 @@ async def get_balance(username, password, adspower_user_id=None, latam_password=
         livelo_balance = result[0] if isinstance(result, tuple) else result.get("livelo") if isinstance(result, dict) else result
         error_screenshot = result[1] if isinstance(result, tuple) else result.get("screenshot") if isinstance(result, dict) else None
 
-        # 2. LATAM
-        # Use specific latam_password if provided, else fallback to the shared password
-        latam_result = await extract_latam(context, username, decrypted_latam_pass)
-        latam_balance = latam_result[0] if isinstance(latam_result, tuple) else latam_result
-        latam_error_screenshot = latam_result[1] if isinstance(latam_result, tuple) else None
+        # 2. LATAM (TEMPORARILY DEACTIVATED)
+        # latam_result = await extract_latam(context, username, decrypted_latam_pass)
+        # latam_balance = latam_result[0] if isinstance(latam_result, tuple) else latam_result
+        # latam_error_screenshot = latam_result[1] if isinstance(latam_result, tuple) else None
+        
+        logger.info("LATAM Extraction is currently deactivated. Skipping...")
+        latam_balance = None
+        latam_error_screenshot = None
 
         if livelo_balance is not None or latam_balance is not None: 
              await update_account_db_multi(username, "active", livelo_val=livelo_balance, latam_val=latam_balance)
