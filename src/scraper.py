@@ -87,46 +87,11 @@ async def save_screenshot(page, name_prefix):
         logger.error(f"Failed to save screenshot: {e}")
         return None
 
-async def update_account_db(username, status, balance=None, logs=True):
-    pass # Mantido conforme seu pedido anterior para simplificar o log aqui, ou restaure se necessário
+# Removed update_account_db functionally as requested
 
 async def update_account_db_multi(username, status, livelo_val=None, latam_val=None):
-    if not supabase: return
-    try:
-        # 1. Update 'accounts' table
-        data = {"status": status, "updated_at": "now()"}
-        if livelo_val is not None:
-            data["livelo_balance"] = livelo_val 
-        if latam_val is not None:
-            data["latam_balance"] = latam_val
-            
-        supabase.table("accounts").update(data).eq("username", username).execute()
-        
-        # 2. Log Balance
-        acc_resp = supabase.table("accounts").select("id").eq("username", username).execute()
-        
-        if not acc_resp.data: return 
-
-        account_id = acc_resp.data[0]['id']
-        
-        if livelo_val is not None:
-             supabase.table("balance_logs").insert({
-                 "account_id": account_id,
-                 "new_balance": livelo_val,
-                 "program": "livelo",
-                 "checked_at": "now()"
-             }).execute()
-
-        if latam_val is not None:
-             supabase.table("balance_logs").insert({
-                 "account_id": account_id,
-                 "new_balance": latam_val,
-                 "program": "latam",
-                 "checked_at": "now()"
-             }).execute()
-
-    except Exception as e:
-        logger.error(f"DB Update Error: {e}")
+    # Supabase updates disabled as requested.
+    pass
 
 async def _check_waf_block(page):
     """
@@ -316,10 +281,11 @@ async def extract_livelo(context, username, password):
                 raise Exception("BLOQUEIO WAF INICIAL")
 
             if attempt == 1:
-                points = await _extract_points(page)
-                if points is not None:
-                    logger.info(f"✅ SUCESSO RÁPIDO (Já logado): {points}")
-                    return points, None
+                # No longer extracting points, checking if tokens can be sent immediately
+                token_sent = await _send_livelo_tokens(context, username)
+                if token_sent:
+                    logger.info("✅ SUCESSO RÁPIDO (Tokens enviados, já logado)")
+                    return 0, None
 
             if attempt == 1 and "acesso.livelo.com.br" not in page.url:
                 logger.info("Atualizando página para garantir...")
@@ -328,22 +294,23 @@ async def extract_livelo(context, username, password):
                     await asyncio.sleep(5)
                 except: pass
                 if await _check_waf_block(page): raise Exception("BLOQUEIO WAF PÓS-RELOAD")
-                points = await _extract_points(page)
-                if points is not None:
-                    logger.info(f"✅ SUCESSO (Pós-Reload): {points}")
-                    return points, None
+                
+                token_sent = await _send_livelo_tokens(context, username)
+                if token_sent:
+                    logger.info("✅ SUCESSO (Tokens enviados pós-Reload)")
+                    return 0, None
 
-            logger.info("Pontos não encontrados. Iniciando Login...")
+            logger.info("Sessão não encontrada ou tokens não enviados. Iniciando Login...")
             await perform_login(page, username, password)
             
             # Send tokens AGAIN after successful login to ensure they are fresh
-            await _send_livelo_tokens(context, username)
+            token_sent = await _send_livelo_tokens(context, username)
             
-            points = await _extract_points(page)
-            if points is not None:
-                logger.info(f"✅ SUCESSO (Pós-Login): {points}")
-                return points, None
-            raise Exception("Pontos não encontrados (Login pode ter falhado silenciosamente).")
+            if token_sent:
+                logger.info("✅ SUCESSO (Tokens enviados pós-Login)")
+                return 0, None
+                
+            raise Exception("Tokens não encontrados após login.")
 
         except Exception as e:
             err_msg = str(e)
@@ -620,7 +587,7 @@ async def get_balance(username, password, adspower_user_id=None, latam_password=
         latam_error_screenshot = None
 
         if livelo_balance is not None or latam_balance is not None: 
-             await update_account_db_multi(username, "active", livelo_val=livelo_balance, latam_val=latam_balance)
+             # DB Update skipped as requested.
              
              # Consolidate screenshots: if one failed, report that screenshot even on success
              final_screenshot = error_screenshot or latam_error_screenshot

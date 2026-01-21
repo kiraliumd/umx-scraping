@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 from src.scraper import get_balance
 from src.adspower import AdsPowerController
 import src.clickup as clickup
-from src.sheets_logger import SheetsLogger
 
 # Configure logging
 logging.basicConfig(
@@ -32,7 +31,7 @@ supabase: Client = create_client(url, key)
 CLICKUP_CHANNEL_ID = os.environ.get("CLICKUP_CHANNEL_ID", "")
 
 
-async def process_account(account, stats, details_log, sheets_logger=None):
+async def process_account(account, stats, details_log):
     username = account['username']
     adspower_id = account.get('adspower_user_id')
     
@@ -40,11 +39,6 @@ async def process_account(account, stats, details_log, sheets_logger=None):
         logger.warning(f"Skipping {username}: No AdsPower ID.")
         details_log.append(f"❌ {username}: Sem AdsPower ID")
         stats['failed'] += 1
-        if sheets_logger:
-            try: sheets_logger.log_execution(username, 0, "FALHA", program="Livelo", detail="Sem AdsPower ID")
-            except: pass
-            try: sheets_logger.log_execution(username, 0, "FALHA", program="LATAM", detail="Sem AdsPower ID")
-            except: pass
         return False
 
     logger.info(f"========== Processing: {username} (ID: {adspower_id}) ==========")
@@ -72,53 +66,7 @@ async def process_account(account, stats, details_log, sheets_logger=None):
         logger.info(f"RESULT {username}: Livelo={livelo_val}, LATAM={latam_val} - Status: {status_str}")
 
         if result['status'] == 'success':
-            new_livelo = result.get('livelo')
-            new_latam = result.get('latam')
-            
-            liv_ok = (new_livelo is not None)
-            latam_ok = (new_latam is not None)
-            
-            # Log Livelo to Sheets
-            if sheets_logger:
-                if liv_ok:
-                     try: sheets_logger.log_execution(profile_name, new_livelo, "SUCESSO", program="Livelo", detail="Extração OK")
-                     except Exception as e: logger.error(f"Sheets Log Error (Livelo): {e}")
-                else:
-                     try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="Livelo", detail="Saldo vazio")
-                     except Exception as e: logger.error(f"Sheets Log Error (Livelo): {e}")
-
-            # Log LATAM to Sheets
-            if sheets_logger:
-                if latam_ok:
-                     try: sheets_logger.log_execution(profile_name, new_latam, "SUCESSO", program="LATAM", detail="Extração OK")
-                     except Exception as e: logger.error(f"Sheets Log Error (LATAM): {e}")
-                else:
-                     try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="LATAM", detail="Saldo vazio")
-                     except Exception as e: logger.error(f"Sheets Log Error (LATAM): {e}")
-
-            # Stats update
-            if liv_ok or latam_ok:
-                stats['success'] += 1
-            else:
-                stats['failed'] += 1
-                details_log.append(f"❌ {username}: Falha na extração de ambos")
-
-            # --- DB Comparison & Alerts ---
-            changes = {}
-            if liv_ok:
-                old_livelo = account.get('livelo_balance') or 0
-                if new_livelo != old_livelo:
-                    changes['livelo'] = {'old': old_livelo, 'new': new_livelo}
-            
-            if latam_ok:
-                old_latam = account.get('latam_balance') or 0
-                if new_latam != old_latam:
-                    changes['latam'] = {'old': old_latam, 'new': new_latam}
-
-            if changes:
-                logger.info(f"Divergence detected: {changes}")
-                await clickup.create_task(account, changes)
-            
+            stats['success'] += 1
             return True
         else:
             msg = result.get('message', 'Erro desconhecido')
@@ -129,22 +77,13 @@ async def process_account(account, stats, details_log, sheets_logger=None):
             fail_msg = f"❌ {username}: {msg}"
             if screenshot:
                 fname = os.path.basename(screenshot)
-                # User requested format: "❌ [ID]: Falha na Extração - Print: nome_do_arquivo.png"
-                # Replacing generic msg if it's the standard generic error, or appending if specific
-                if "Failed to extract Livelo" in msg:
-                    fail_msg = f"❌ {username}: Falha na Extração - Print: {fname}"
+                if "Failed to extract Livelo" in msg or "Tokens não encontrados" in msg:
+                    fail_msg = f"❌ {username}: Falha no Token - Print: {fname}"
                 else:
                     fail_msg = f"❌ {username}: {msg} - Print: {fname}"
                 
             details_log.append(fail_msg)
             stats['failed'] += 1
-            
-            if sheets_logger:
-                try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="Livelo", detail=msg)
-                except: pass
-                try: sheets_logger.log_execution(profile_name, 0, "FALHA", program="LATAM", detail=msg)
-                except: pass
-                
             return False
             
     except Exception as e:
@@ -152,12 +91,6 @@ async def process_account(account, stats, details_log, sheets_logger=None):
         details_log.append(f"❌ {username}: Exception - {str(e)}")
         stats['failed'] += 1
         
-        if sheets_logger:
-            try: sheets_logger.log_execution(profile_name, 0, "CRITICAL", program="Livelo", detail=str(e))
-            except: pass
-            try: sheets_logger.log_execution(profile_name, 0, "CRITICAL", program="LATAM", detail=str(e))
-            except: pass
-            
         return False
         
     finally:
@@ -185,9 +118,6 @@ async def run_batch():
     total = len(accounts)
     logger.info(f"Found {total} active accounts.")
     
-    # Init Sheets Logger
-    sheets_logger = SheetsLogger()
-    
     # Init Stats
     stats = {"success": 0, "failed": 0}
     details_log = []
@@ -195,16 +125,54 @@ async def run_batch():
     import time
     start_time = time.time()
     
-    # 2. Loop
+    # 2. Main Loop (First Pass)
+    failed_accounts = []
     for i, acc in enumerate(accounts):
         logger.info(f"--- Task {i+1}/{total} ---")
-        await process_account(acc, stats, details_log, sheets_logger)
+        success = await process_account(acc, stats, details_log)
+        if not success:
+            failed_accounts.append(acc)
             
+    # 3. Repescagem (Second Pass for failures)
+    if failed_accounts:
+        retry_total = len(failed_accounts)
+        logger.info(f"\n>>> INICIANDO REPESCAGEM: {retry_total} contas falharam na primeira tentativa. <<<")
+        
+        # We need to temporarily "undo" the fail count for these to recount correctly if they succeed
+        # Actually, it's easier to just keep the original fails and only decrement if they succeed now
+        
+        for i, acc in enumerate(failed_accounts):
+            username = acc['username']
+            logger.info(f"--- Repescagem {i+1}/{retry_total}: {username} ---")
+            
+            # Create a localized log for this account to avoid duplicate error lines in the final report
+            # unless it fails again.
+            retry_details = []
+            final_success = await process_account(acc, stats, retry_details)
+            
+            if final_success:
+                logger.info(f"✅ SUCESSO na Repescagem para {username}!")
+                # Decrement original fail count since it's now a success
+                stats['failed'] -= 1 
+                # stats['success'] is already incremented inside process_account
+                
+                # Remove the failure message from details_log (it will be at the end)
+                # This is tricky because the message might vary. We'll add a note instead.
+                details_log.append(f"🔄 {username}: Recuperado na Repescagem")
+            else:
+                logger.warning(f"❌ Falha persistente na Repescagem para {username}.")
+                # process_account already incremented stats['failed'] again, 
+                # but we only want to count it ONCE in the final total fails.
+                # So we decrement the "extra" fail.
+                stats['failed'] -= 1
+                if retry_details:
+                    details_log.append(f"❌ {username}: Falha persistente na Repescagem")
+
     end_time = time.time()
     duration = end_time - start_time
     duration_str = f"{int(duration // 60)}m {int(duration % 60)}s"
 
-    # 3. Report Generation
+    # 4. Report Generation
     from datetime import datetime
     date_str = datetime.now().strftime("%d/%m/%Y")
     
@@ -216,7 +184,9 @@ async def run_batch():
     report_lines.append(f"⏱️ Tempo Total: {duration_str}")
     report_lines.append(f"👥 Contas Analisadas: {total}")
     report_lines.append(f"✅ Sucesso Total: {stats['success']}")
-    report_lines.append(f"❌ Falhas: {stats['failed']}")
+    report_lines.append(f"❌ Falhas Finais: {stats['failed']}")
+    if failed_accounts:
+        report_lines.append(f"🔄 Total Repescadas: {len(failed_accounts)}")
     
     report_lines.append("")
     report_lines.append("📝 **Detalhamento de Problemas:**")
