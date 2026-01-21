@@ -26,7 +26,7 @@ async def main():
     supabase: Client = create_client(url, key)
 
     # Defina aqui o ID que você quer testar
-    TARGET_ADSPOWER_ID = "k17ttb29"  # Substitua pelo ID desejado
+    TARGET_ADSPOWER_ID = "k17ttavo"  # Substitua pelo ID desejado
 
     print(f"Buscando conta específica: {TARGET_ADSPOWER_ID}...")
     try:
@@ -85,7 +85,7 @@ async def main():
         print(result)
         
         if result.get("status") == "success":
-            print("\nSUCCESS: Balance retrieved and DB updated.")
+            print("\nSUCCESS: Tokens sent and flow completed (No DB updates as per new flow).")
         else:
             print("\nFAILURE: Scraper returned error.")
             
