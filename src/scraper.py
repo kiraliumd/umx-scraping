@@ -166,19 +166,36 @@ async def perform_login(page, username, password):
             try: await page.wait_for_selector("#username", state="visible", timeout=10000)
             except: pass
 
-        # 2. Preenchimento
-        logger.info("Filling credentials...")
+        # 2. Preenchimento (Humanizado)
+        logger.info("Filling credentials (Humanized)...")
         
         # CPF Sanitization Double-Check (Zero Padding)
         if username.isdigit() and len(username) < 11:
             username = username.zfill(11)
             
-        await page.fill("#username", username)
+        await asyncio.sleep(random.uniform(1.2, 2.5)) # Pause before typing
+        await page.type("#username", username, delay=random.randint(80, 180))
+        
+        await asyncio.sleep(random.uniform(0.5, 1.2)) # Pause before password
+        await page.type("#password", password, delay=random.randint(60, 150))
         await asyncio.sleep(0.5)
-        await page.fill("#password", password)
-        await asyncio.sleep(0.5)
-        await page.press("#password", "Enter")
-        logger.info("Credentials submitted. Waiting...")
+        
+        # Wait for the submit button to be enabled before clicking
+        submit_btn = page.locator("#btn-submit")
+        try:
+            # Livelo login button has a 'disabled' attribute that is removed when fields are valid
+            await submit_btn.wait_for(state="visible", timeout=5000)
+            # Ensure it's not disabled (Playwright's click() waits for actionable, but being explicit helps)
+            await page.wait_for_function(
+                "selector => !document.querySelector(selector).disabled",
+                arg="#btn-submit",
+                timeout=5000
+            )
+            await submit_btn.click()
+            logger.info("Credentials submitted via #btn-submit. Waiting...")
+        except Exception as click_err:
+            logger.warning(f"Failed to click #btn-submit directly: {click_err}. Falling back to Enter key.")
+            await page.press("#password", "Enter")
         
         # 3. Wait for redirect/load
         await asyncio.sleep(10)
@@ -187,13 +204,13 @@ async def perform_login(page, username, password):
         if await _check_waf_block(page):
             raise Exception("LOGIN BLOCKED: WAF Access Denied detectado.")
 
-        if await page.locator("#username").is_visible(timeout=2000) or await page.get_by_text("Entrar").first.is_visible(timeout=2000):
+        if await page.locator("#username").is_visible(timeout=2000) or await page.locator("#btn-submit").is_visible(timeout=2000):
             raise Exception("LOGIN FALHOU: Botão entrar ainda visível.")
 
     except Exception as e:
         logger.error(f"Login Interaction Failed: {e}")
         if "BLOCKED" in str(e): raise e
-        await save_screenshot(page, "login_failed")
+        await save_screenshot(page, f"login_failed_{username}")
         raise e
 
 async def _ensure_clean_tab(context, page=None):
