@@ -174,9 +174,11 @@ async def perform_login(page, username, password):
             username = username.zfill(11)
             
         await asyncio.sleep(random.uniform(1.2, 2.5)) # Pause before typing
+        await page.locator("#username").fill("")
         await page.type("#username", username, delay=random.randint(80, 180))
         
         await asyncio.sleep(random.uniform(0.5, 1.2)) # Pause before password
+        await page.locator("#password").fill("")
         await page.type("#password", password, delay=random.randint(60, 150))
         await asyncio.sleep(0.5)
         
@@ -354,6 +356,7 @@ async def perform_latam_login(page, username, password):
         logger.info("Step 1: Filling Username (Humanized)...")
         await page.wait_for_selector("#form-input--alias", state="visible", timeout=20000)
         await asyncio.sleep(random.uniform(1.2, 2.5)) # Pause before typing
+        await page.locator("#form-input--alias").fill("")
         await page.type("#form-input--alias", username, delay=random.randint(70, 160))
         
         await asyncio.sleep(random.uniform(0.5, 1.2)) # Pause before button
@@ -363,6 +366,7 @@ async def perform_latam_login(page, username, password):
         logger.info("Step 2: Filling Password (Humanized)...")
         await page.wait_for_selector("#form-input--password", state="visible", timeout=20000)
         await asyncio.sleep(random.uniform(1.0, 2.1)) # Pause before typing
+        await page.locator("#form-input--password").fill("")
         await page.type("#form-input--password", password, delay=random.randint(60, 150))
         
         await asyncio.sleep(random.uniform(0.6, 1.3)) # Pause before button

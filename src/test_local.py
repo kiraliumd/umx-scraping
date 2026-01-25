@@ -26,7 +26,7 @@ async def main():
     supabase: Client = create_client(url, key)
 
     # Defina aqui o ID que você quer testar
-    TARGET_ADSPOWER_ID = "k17ttavo"  # Substitua pelo ID desejado
+    TARGET_ADSPOWER_ID = "k17ttaq2"  # Substitua pelo ID desejado
 
     print(f"Buscando conta específica: {TARGET_ADSPOWER_ID}...")
     try:
