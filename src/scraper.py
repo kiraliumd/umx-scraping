@@ -78,8 +78,7 @@ async def _get_latam_code_from_supabase(start_time):
 async def save_screenshot(page, name_prefix):
     try:
         os.makedirs("prints", exist_ok=True)
-        timestamp = int(time.time())
-        filename = f"prints/{name_prefix}_{timestamp}.png"
+        filename = f"prints/{name_prefix}.png"
         await page.screenshot(path=filename)
         logger.info(f"Screenshot saved to {filename}")
         return filename
@@ -155,16 +154,33 @@ async def perform_login(page, username, password):
     try:
         logger.info("Starting Login process...")
         
-        # 1. Garantir que estamos no formulário
+        # 1. Cookie Banner (Pode bloquear o clique)
+        try:
+            cookie_btn = page.locator("button:has-text('Autorizar'), #cookies-politics-button, .css-g7eayk:has-text('Autorizar')")
+            if await cookie_btn.is_visible(timeout=3000):
+                logger.info("Banner de cookies detectado. Autorizando...")
+                await cookie_btn.click()
+                await asyncio.sleep(1)
+        except: pass
+
+        # 2. Garantir que estamos no formulário
         if not await page.locator("#username").is_visible(timeout=3000):
-            logger.info("Botão 'Entrar' necessário...")
-            if await page.locator("#l-header__button_login").is_visible():
-                await page.click("#l-header__button_login")
-            elif await page.get_by_text("Entrar").first.is_visible():
-                await page.get_by_text("Entrar").first.click()
+            logger.info("Botão de login necessário no cabeçalho...")
+            # O ID #l-header__button_login é o oficial da Livelo para o botão do cabeçalho
+            btn_header = page.locator("#l-header__button_login")
+            if await btn_header.is_visible(timeout=3000):
+                logger.info("Clicando em #l-header__button_login...")
+                await btn_header.click()
+            else:
+                # Fallback apenas se o ID mudar, mas usando texto do botão e não do link
+                logger.info("ID #l-header__button_login não encontrado, tentando 'Fazer login'...")
+                await page.get_by_text("Fazer login").first.click()
             
-            try: await page.wait_for_selector("#username", state="visible", timeout=10000)
-            except: pass
+            try: 
+                # Espera carregar a página de login
+                await page.wait_for_selector("#username", state="visible", timeout=15000)
+            except: 
+                logger.warning("Página de login (#username) não apareceu após clique no cabeçalho.")
 
         # 2. Preenchimento (Humanizado)
         logger.info("Filling credentials (Humanized)...")
@@ -204,15 +220,41 @@ async def perform_login(page, username, password):
         
         # 4. VALIDAÇÃO PÓS-LOGIN
         if await _check_waf_block(page):
-            raise Exception("LOGIN BLOCKED: WAF Access Denied detectado.")
+            raise Exception("WAF_BLOCK: Access Denied detectado.")
+
+        # Verificar se caímos na página de redefinição de senha
+        content_lower = (await page.content()).lower()
+        if "redefinir senha" in content_lower or "código de autenticação" in content_lower or "reset-credentials" in page.url:
+             logger.warning(f"⚠️ CONTA BLOQUEADA: {username} exige redefinição de senha.")
+             raise Exception("RESET_REQUIRED: Conta exige redefinição de senha manual.")
 
         if await page.locator("#username").is_visible(timeout=2000) or await page.locator("#btn-submit").is_visible(timeout=2000):
-            raise Exception("LOGIN FALHOU: Botão entrar ainda visível.")
+            # Se ainda estiver visível, pode ser erro de credencial ou bloqueio.
+            error_msg = await page.locator(".error-message, #error-message").first.text_content() if await page.locator(".error-message, #error-message").first.is_visible(timeout=1000) else "Desconhecido"
+            
+            # Checar se é erro de credencial explicitamente
+            if "incorret" in error_msg.lower() or "inválid" in error_msg.lower():
+                logger.error(f"❌ AUTH_FAILED: Credenciais incorretas para {username}")
+                await save_screenshot(page, f"AUTH_FAILED_{username}")
+                raise Exception(f"AUTH_FAILED: Usuário ou senha inválidos.")
+            
+            await save_screenshot(page, f"LOGIN_FAILED_{username}")
+            raise Exception(f"LOGIN FALHOU: Formulário ainda visível. Erro: {error_msg}")
 
     except Exception as e:
-        logger.error(f"Login Interaction Failed: {e}")
-        if "BLOCKED" in str(e): raise e
-        await save_screenshot(page, f"login_failed_{username}")
+        err_str = str(e)
+        logger.error(f"Login Interaction Failed: {err_str}")
+        
+        # Decide o prefixo do print
+        prefix = "LOGIN_FAILED"
+        if "RESET_REQUIRED" in err_str: prefix = "RESET_REQUIRED"
+        elif "WAF_BLOCK" in err_str: prefix = "WAF_BLOCK"
+        elif "AUTH_FAILED" in err_str: prefix = "AUTH_FAILED"
+        
+        # Só salva o print se for um erro que ainda não salvamos (geralmente AUTH já salva antes)
+        if "AUTH_FAILED" not in err_str:
+            await save_screenshot(page, f"{prefix}_{username}")
+        
         raise e
 
 async def _ensure_clean_tab(context, page=None):
@@ -297,7 +339,7 @@ async def extract_livelo(context, username, password):
                 await page.goto("https://www.livelo.com.br/", timeout=60000)
             
             if await _check_waf_block(page):
-                raise Exception("BLOQUEIO WAF INICIAL")
+                raise Exception("WAF_BLOCK: Bloqueio inicial detectado.")
 
             if attempt == 1:
                 # No longer extracting points, checking if tokens can be sent immediately
@@ -312,7 +354,7 @@ async def extract_livelo(context, username, password):
                     await page.reload(wait_until="domcontentloaded")
                     await asyncio.sleep(5)
                 except: pass
-                if await _check_waf_block(page): raise Exception("BLOQUEIO WAF PÓS-RELOAD")
+                if await _check_waf_block(page): raise Exception("WAF_BLOCK: Bloqueio após recarga")
                 
                 token_sent = await _send_livelo_tokens(context, username)
                 if token_sent:
@@ -342,8 +384,13 @@ async def extract_livelo(context, username, password):
                 continue
             else:
                 final_error = err_msg
-                try: final_screenshot = await save_screenshot(page, f"erro_fatal_{username}")
-                except: pass
+                # O print normalmente já foi salvo pelo perform_login. 
+                # Se final_screenshot estiver vazio, tentamos um último recurso.
+                if not final_screenshot:
+                    try: 
+                        prefix = "WAF_BLOCK" if "WAF" in err_msg else "RESET_REQUIRED" if "RESET" in err_msg else "AUTH_FAILED" if "AUTH" in err_msg else "ERROR_FATAL"
+                        final_screenshot = await save_screenshot(page, f"{prefix}_{username}")
+                    except: pass
                 break
     return {"livelo": None, "error": final_error, "screenshot": final_screenshot}
 

@@ -3,6 +3,7 @@ import asyncio
 import logging
 import os
 import sys
+import random
 
 # Add project root to path to allow 'from src...' imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -77,8 +78,12 @@ async def process_account(account, stats, details_log):
             fail_msg = f"❌ {username}: {msg}"
             if screenshot:
                 fname = os.path.basename(screenshot)
-                if "Failed to extract Livelo" in msg or "Tokens não encontrados" in msg:
-                    fail_msg = f"❌ {username}: Falha no Token - Print: {fname}"
+                if "AUTH_FAILED" in fname:
+                    fail_msg = f"🚫 {username}: Credenciais Inválidas 🔑"
+                elif "RESET_REQUIRED" in fname:
+                    fail_msg = f"⚠️ {username}: Precisa Redefinir Senha 🔄"
+                elif "WAF_BLOCK" in fname:
+                    fail_msg = f"🧱 {username}: Bloqueio de Rede (WAF) 🛑"
                 else:
                     fail_msg = f"❌ {username}: {msg} - Print: {fname}"
                 
@@ -99,8 +104,8 @@ async def process_account(account, stats, details_log):
         logger.info("Waiting 5s for cleanup...")
         await asyncio.sleep(5)
 
-async def run_batch():
-    logger.info(">>> Starting Batch Processing Routine <<<")
+async def run_batch(concurrency_limit=2):
+    logger.info(">>> Starting Batch Processing Routine (Parallel) <<<")
     
     # 1. Fetch Active Accounts
     try:
@@ -116,7 +121,7 @@ async def run_batch():
         return
 
     total = len(accounts)
-    logger.info(f"Found {total} active accounts.")
+    logger.info(f"Found {total} active accounts. Concurrency limit: {concurrency_limit}")
     
     # Init Stats
     stats = {"success": 0, "failed": 0}
@@ -125,59 +130,63 @@ async def run_batch():
     import time
     start_time = time.time()
     
-    # 2. Main Loop (First Pass)
-    failed_accounts = []
-    for i, acc in enumerate(accounts):
-        logger.info(f"--- Task {i+1}/{total} ---")
-        success = await process_account(acc, stats, details_log)
-        if not success:
-            failed_accounts.append(acc)
+    # 2. Parallel Processing with Semaphore
+    semaphore = asyncio.Semaphore(concurrency_limit)
+    waf_failed_accounts = []
+
+    async def sem_process_account(acc, is_retry=False):
+        async with semaphore:
+            # Small staggered start to avoid API/CPU spikes
+            if not is_retry:
+                await asyncio.sleep(random.uniform(1, 3))
             
-    # 3. Repescagem (Second Pass for failures)
-    if failed_accounts:
-        retry_total = len(failed_accounts)
-        logger.info(f"\n>>> INICIANDO REPESCAGEM: {retry_total} contas falharam na primeira tentativa. <<<")
+            success = await process_account(acc, stats, details_log)
+            
+            # Se falhou por WAF e não é uma tentativa de repescagem, adiciona na lista
+            if not success and not is_retry:
+                # Verificamos se o erro foi WAF através do log ou resultado
+                # Como process_account adicionou no details_log, podemos checar
+                if details_log and "Bloqueio de Rede (WAF)" in details_log[-1]:
+                    waf_failed_accounts.append(acc)
+            
+            return success
+
+    tasks = [sem_process_account(acc) for acc in accounts]
+    
+    # Run all tasks concurrently
+    await asyncio.gather(*tasks)
+
+    # 3. Repescagem Seletiva (Apenas WAF)
+    if waf_failed_accounts:
+        retry_total = len(waf_failed_accounts)
+        logger.info(f"\n>>> INICIANDO REPESCAGEM: {retry_total} contas tiveram bloqueio WAF. <<<")
         
-        # We need to temporarily "undo" the fail count for these to recount correctly if they succeed
-        # Actually, it's easier to just keep the original fails and only decrement if they succeed now
+        # Resetamos as estatísticas de falha para estas contas antes da repescagem
+        # (Elas serão re-contadas dentro do sem_process_account)
+        stats['failed'] -= retry_total
         
-        for i, acc in enumerate(failed_accounts):
-            username = acc['username']
-            logger.info(f"--- Repescagem {i+1}/{retry_total}: {username} ---")
-            
-            # Create a localized log for this account to avoid duplicate error lines in the final report
-            # unless it fails again.
-            retry_details = []
-            final_success = await process_account(acc, stats, retry_details)
-            
-            if final_success:
-                logger.info(f"✅ SUCESSO na Repescagem para {username}!")
-                # Decrement original fail count since it's now a success
-                stats['failed'] -= 1 
-                # stats['success'] is already incremented inside process_account
-                
-                # Remove the failure message from details_log (it will be at the end)
-                # This is tricky because the message might vary. We'll add a note instead.
-                details_log.append(f"🔄 {username}: Recuperado na Repescagem")
-            else:
-                logger.warning(f"❌ Falha persistente na Repescagem para {username}.")
-                # process_account already incremented stats['failed'] again, 
-                # but we only want to count it ONCE in the final total fails.
-                # So we decrement the "extra" fail.
-                stats['failed'] -= 1
-                if retry_details:
-                    details_log.append(f"❌ {username}: Falha persistente na Repescagem")
+        # Removemos as mensagens de erro de WAF originais para não duplicar no relatório
+        # Filtramos o details_log para remover as linhas de WAF dessas contas
+        waf_usernames = [a['username'] for a in waf_failed_accounts]
+        details_log[:] = [line for line in details_log if not any(uname in line and "WAF" in line for uname in waf_usernames)]
+
+        retry_tasks = [sem_process_account(acc, is_retry=True) for acc in waf_failed_accounts]
+        await asyncio.gather(*retry_tasks)
+        
+        # Adiciona nota informativa para contas recuperadas
+        # (Opcional, mas ajuda a entender o que aconteceu)
+        logger.info(">>> Repescagem concluída. <<<")
 
     end_time = time.time()
     duration = end_time - start_time
     duration_str = f"{int(duration // 60)}m {int(duration % 60)}s"
 
-    # 4. Report Generation
+    # 3. Report Generation
     from datetime import datetime
     date_str = datetime.now().strftime("%d/%m/%Y")
     
     report_lines = []
-    report_lines.append("🤖 **Relatório Diário de Execução**")
+    report_lines.append("🤖 **Relatório Diário de Execução (Paralelo)**")
     report_lines.append(f"📅 {date_str}")
     report_lines.append("")
     report_lines.append("📊 **Resumo:**")
@@ -185,13 +194,13 @@ async def run_batch():
     report_lines.append(f"👥 Contas Analisadas: {total}")
     report_lines.append(f"✅ Sucesso Total: {stats['success']}")
     report_lines.append(f"❌ Falhas Finais: {stats['failed']}")
-    if failed_accounts:
-        report_lines.append(f"🔄 Total Repescadas: {len(failed_accounts)}")
     
     report_lines.append("")
     report_lines.append("📝 **Detalhamento de Problemas:**")
     if details_log:
-        for line in details_log:
+        # Sort details alphabetically by username for better readability since they finish at different times
+        sorted_details = sorted(details_log)
+        for line in sorted_details:
             report_lines.append(line)
     else:
         report_lines.append("Nenhum problema detectado.")
