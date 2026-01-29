@@ -104,7 +104,7 @@ async def process_account(account, stats, details_log):
         logger.info("Waiting 5s for cleanup...")
         await asyncio.sleep(5)
 
-async def run_batch(concurrency_limit=2):
+async def run_batch(concurrency_limit=1):
     logger.info(">>> Starting Batch Processing Routine (Parallel) <<<")
     
     # 1. Fetch Active Accounts
