@@ -321,78 +321,64 @@ async def extract_livelo(context, username, password):
                 break
         except: pass
         
-    max_retries = 2
-    attempt = 0
-    final_error = None
-    final_screenshot = None
-
-    # Try sending tokens if they already exist (pre-existing session)
-    await _send_livelo_tokens(context, username)
+    # No longer extracting points, checking if tokens can be sent immediately
+    # This "Fast Track" saves time by reusing a valid session if AdsPower kept it.
+    if await _send_livelo_tokens(context, username):
+        logger.info("✅ SUCESSO RÁPIDO (Tokens enviados de sessão pré-existente)")
+        return 0, None
          
-    while attempt < max_retries:
-        attempt += 1
-        logger.info(f"🔄 Tentativa {attempt}/{max_retries}")
-        try:
-            if not page or attempt > 1:
-                if attempt > 1: logger.info("♻️ Retry: Abrindo aba limpa...")
-                page = await _ensure_clean_tab(context, page)
-                await page.goto("https://www.livelo.com.br/", timeout=60000)
+    try:
+        if not page:
+            page = await _ensure_clean_tab(context, page)
+            await page.goto("https://www.livelo.com.br/", timeout=60000)
+        
+        if await _check_waf_block(page):
+            raise Exception("WAF_BLOCK: Bloqueio inicial detectado.")
+
+        # Check if login is already valid
+        token_sent = await _send_livelo_tokens(context, username)
+        if token_sent:
+            logger.info("✅ SUCESSO RÁPIDO (Tokens enviados, já logado)")
+            return 0, None
+
+        if "acesso.livelo.com.br" not in page.url:
+            logger.info("Atualizando página para garantir...")
+            try: 
+                await page.reload(wait_until="domcontentloaded")
+                await asyncio.sleep(5)
+            except: pass
+            if await _check_waf_block(page): raise Exception("WAF_BLOCK: Bloqueio após recarga")
             
-            if await _check_waf_block(page):
-                raise Exception("WAF_BLOCK: Bloqueio inicial detectado.")
-
-            if attempt == 1:
-                # No longer extracting points, checking if tokens can be sent immediately
-                token_sent = await _send_livelo_tokens(context, username)
-                if token_sent:
-                    logger.info("✅ SUCESSO RÁPIDO (Tokens enviados, já logado)")
-                    return 0, None
-
-            if attempt == 1 and "acesso.livelo.com.br" not in page.url:
-                logger.info("Atualizando página para garantir...")
-                try: 
-                    await page.reload(wait_until="domcontentloaded")
-                    await asyncio.sleep(5)
-                except: pass
-                if await _check_waf_block(page): raise Exception("WAF_BLOCK: Bloqueio após recarga")
-                
-                token_sent = await _send_livelo_tokens(context, username)
-                if token_sent:
-                    logger.info("✅ SUCESSO (Tokens enviados pós-Reload)")
-                    return 0, None
-
-            logger.info("Sessão não encontrada ou tokens não enviados. Iniciando Login...")
-            await perform_login(page, username, password)
-            
-            # Send tokens AGAIN after successful login to ensure they are fresh
             token_sent = await _send_livelo_tokens(context, username)
-            
             if token_sent:
-                logger.info("✅ SUCESSO (Tokens enviados pós-Login)")
+                logger.info("✅ SUCESSO (Tokens enviados pós-Reload)")
                 return 0, None
-                
-            raise Exception("Tokens não encontrados após login.")
 
-        except Exception as e:
-            err_msg = str(e)
-            logger.error(f"Erro na tentativa {attempt}: {err_msg}")
-            is_waf = "BLOQUEIO" in err_msg or "Access Denied" in err_msg
-            if attempt < max_retries:
-                if is_waf:
-                    logger.warning("⚠️ Bloqueio WAF. Aguardando 5s...")
-                    await asyncio.sleep(5)
-                continue
-            else:
-                final_error = err_msg
-                # O print normalmente já foi salvo pelo perform_login. 
-                # Se final_screenshot estiver vazio, tentamos um último recurso.
-                if not final_screenshot:
-                    try: 
-                        prefix = "WAF_BLOCK" if "WAF" in err_msg else "RESET_REQUIRED" if "RESET" in err_msg else "AUTH_FAILED" if "AUTH" in err_msg else "ERROR_FATAL"
-                        final_screenshot = await save_screenshot(page, f"{prefix}_{username}")
-                    except: pass
-                break
-    return {"livelo": None, "error": final_error, "screenshot": final_screenshot}
+        logger.info("Sessão não encontrada ou tokens não enviados. Iniciando Login...")
+        await perform_login(page, username, password)
+        
+        # Send tokens AGAIN after successful login to ensure they are fresh
+        token_sent = await _send_livelo_tokens(context, username)
+        
+        if token_sent:
+            logger.info("✅ SUCESSO (Tokens enviados pós-Login)")
+            return 0, None
+            
+        raise Exception("Tokens não encontrados após login.")
+
+    except Exception as e:
+        err_msg = str(e)
+        logger.error(f"Erro na extração: {err_msg}")
+        
+        # O print normalmente já foi salvo pelo perform_login. 
+        # Se final_screenshot estiver vazio, tentamos um último recurso.
+        final_screenshot = None
+        try: 
+            prefix = "WAF_BLOCK" if "WAF" in err_msg else "RESET_REQUIRED" if "RESET" in err_msg else "AUTH_FAILED" if "AUTH" in err_msg else "ERROR_FATAL"
+            final_screenshot = await save_screenshot(page, f"{prefix}_{username}")
+        except: pass
+            
+        return {"livelo": None, "error": err_msg, "screenshot": final_screenshot}
 
 async def perform_latam_login(page, username, password):
     """

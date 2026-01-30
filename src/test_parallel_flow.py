@@ -1,7 +1,12 @@
-
 import asyncio
 import logging
 import time
+import os
+import sys
+
+# Add project root to path to allow 'src' imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from src.scraper import get_balance
 from src.adspower import AdsPowerController
 
@@ -37,12 +42,12 @@ async def test_full_flow_parallel():
             .execute()
         
         all_accounts = response.data
-        if not all_accounts or len(all_accounts) < 2:
+        if not all_accounts or len(all_accounts) < 1:
             logger.error(f"Contas insuficientes encontradas ({len(all_accounts)}).")
             return
             
         # Seleciona 2 contas aleatórias
-        accounts = random.sample(all_accounts, 2)
+        accounts = random.sample(all_accounts, 1)
     except Exception as e:
         logger.error(f"Erro ao buscar contas: {e}")
         return

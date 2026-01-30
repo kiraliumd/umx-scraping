@@ -132,50 +132,17 @@ async def run_batch(concurrency_limit=1):
     
     # 2. Parallel Processing with Semaphore
     semaphore = asyncio.Semaphore(concurrency_limit)
-    waf_failed_accounts = []
 
-    async def sem_process_account(acc, is_retry=False):
+    async def sem_process_account(acc):
         async with semaphore:
             # Small staggered start to avoid API/CPU spikes
-            if not is_retry:
-                await asyncio.sleep(random.uniform(1, 3))
-            
-            success = await process_account(acc, stats, details_log)
-            
-            # Se falhou por WAF e não é uma tentativa de repescagem, adiciona na lista
-            if not success and not is_retry:
-                # Verificamos se o erro foi WAF através do log ou resultado
-                # Como process_account adicionou no details_log, podemos checar
-                if details_log and "Bloqueio de Rede (WAF)" in details_log[-1]:
-                    waf_failed_accounts.append(acc)
-            
-            return success
+            await asyncio.sleep(random.uniform(1, 3))
+            return await process_account(acc, stats, details_log)
 
     tasks = [sem_process_account(acc) for acc in accounts]
     
     # Run all tasks concurrently
     await asyncio.gather(*tasks)
-
-    # 3. Repescagem Seletiva (Apenas WAF)
-    if waf_failed_accounts:
-        retry_total = len(waf_failed_accounts)
-        logger.info(f"\n>>> INICIANDO REPESCAGEM: {retry_total} contas tiveram bloqueio WAF. <<<")
-        
-        # Resetamos as estatísticas de falha para estas contas antes da repescagem
-        # (Elas serão re-contadas dentro do sem_process_account)
-        stats['failed'] -= retry_total
-        
-        # Removemos as mensagens de erro de WAF originais para não duplicar no relatório
-        # Filtramos o details_log para remover as linhas de WAF dessas contas
-        waf_usernames = [a['username'] for a in waf_failed_accounts]
-        details_log[:] = [line for line in details_log if not any(uname in line and "WAF" in line for uname in waf_usernames)]
-
-        retry_tasks = [sem_process_account(acc, is_retry=True) for acc in waf_failed_accounts]
-        await asyncio.gather(*retry_tasks)
-        
-        # Adiciona nota informativa para contas recuperadas
-        # (Opcional, mas ajuda a entender o que aconteceu)
-        logger.info(">>> Repescagem concluída. <<<")
 
     end_time = time.time()
     duration = end_time - start_time
