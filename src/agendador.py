@@ -37,7 +37,7 @@ while True:
     time.sleep(60) # Checa a cada minuto
     contador += 1
     
-    # A cada 10 minutos mostra um "estou vivo" para dar feedback visual
-    if contador >= 10:
+    # A cada 50 minutos mostra um "estou vivo" para dar feedback visual
+    if contador >= 50:
         print(f"[{datetime.now().strftime('%H:%M')}] Agendador aguardando proxima execucao...")
         contador = 0

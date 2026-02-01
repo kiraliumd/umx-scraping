@@ -238,7 +238,7 @@ async def perform_login(page, username, password):
                 await save_screenshot(page, f"AUTH_FAILED_{username}")
                 raise Exception(f"AUTH_FAILED: Usuário ou senha inválidos.")
             
-            await save_screenshot(page, f"LOGIN_FAILED_{username}")
+            # await save_screenshot(page, f"LOGIN_FAILED_{username}")
             raise Exception(f"LOGIN FALHOU: Formulário ainda visível. Erro: {error_msg}")
 
     except Exception as e:
@@ -371,11 +371,12 @@ async def extract_livelo(context, username, password):
         logger.error(f"Erro na extração: {err_msg}")
         
         # O print normalmente já foi salvo pelo perform_login. 
-        # Se final_screenshot estiver vazio, tentamos um último recurso.
+        # Só tenta tirar um novo print se nenhum foi tirado ainda ou se for um erro novo.
         final_screenshot = None
         try: 
-            prefix = "WAF_BLOCK" if "WAF" in err_msg else "RESET_REQUIRED" if "RESET" in err_msg else "AUTH_FAILED" if "AUTH" in err_msg else "ERROR_FATAL"
-            final_screenshot = await save_screenshot(page, f"{prefix}_{username}")
+            # Se a mensagem de erro já indica um dos erros tratados que salvam print, não duplicamos.
+            if not any(x in err_msg.upper() for x in ["WAF", "RESET", "AUTH", "LOGIN"]):
+                final_screenshot = await save_screenshot(page, f"ERROR_FATAL_{username}")
         except: pass
             
         return {"livelo": None, "error": err_msg, "screenshot": final_screenshot}
@@ -587,6 +588,38 @@ async def extract_latam(context, username, password):
 async def get_balance(username, password, adspower_user_id=None, latam_password=None):
     if not adspower_user_id:
         return {"status": "error", "message": "Missing adspower_user_id"}
+
+    # --- OXYLABS STICKY SESSION LOGIC ---
+    try:
+        details = await AdsPowerController.get_profile_details(adspower_user_id)
+        if details and "user_proxy_config" in details:
+            proxy_cfg = details["user_proxy_config"]
+            host = proxy_cfg.get("proxy_host", "").lower()
+            
+            # Detect Oxylabs Residential or Datacenter
+            if "oxylabs.io" in host or "pr.oxylabs.io" in host:
+                current_user = proxy_cfg.get("proxy_user", "")
+                
+                # Generate a unique session ID for THIS run
+                import uuid
+                session_id = str(uuid.uuid4())[:8]
+                
+                # Append or replace session part
+                # Oxylabs format: customer-USERNAME-session-ID or user-USERNAME-session-ID
+                if "-session-" in current_user:
+                    new_user = current_user.split("-session-")[0] + f"-session-{session_id}"
+                else:
+                    new_user = f"{current_user}-session-{session_id}"
+                
+                if new_user != current_user:
+                    proxy_cfg["proxy_user"] = new_user
+                    logger.info(f"Setting Oxylabs Sticky Session for {adspower_user_id}: {new_user}")
+                    await AdsPowerController.update_proxy_config(adspower_user_id, proxy_cfg)
+                    # Brief wait for AdsPower to save
+                    await asyncio.sleep(2)
+    except Exception as proxy_err:
+        logger.warning(f"Failed to set sticky session (non-critical): {proxy_err}")
+
     ws_endpoint = await AdsPowerController.start_profile(adspower_user_id)
     if not ws_endpoint:
         return {"status": "error", "message": "Failed to start AdsPower profile"}
